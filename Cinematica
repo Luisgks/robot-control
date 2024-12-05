@@ -1,0 +1,64 @@
+import rclpy
+from rclpy.node import Node
+from std_msgs.msg import Int32
+from std_msgs.msg import Float32MultiArray
+
+class RealKinematics(Node):
+    def __init__(self):
+        super().__init__('real_kinematics_node')
+        
+        # Parámetros del robot
+        self.wheel_radius = 0.032  # Radio de las ruedas (en metros)
+        self.axle_length = 0.225  # Distancia entre ruedas (en metros)
+
+        # Subscripciones para las RPM de los motores
+        self.sub_rpm_left = self.create_subscription(Int32, 'motor_rpm_left', self.update_rpm_left, 10)
+        self.sub_rpm_right = self.create_subscription(Int32, 'motor_rpm_right', self.update_rpm_right, 10)
+
+        # Publicador de velocidades cinemáticas
+        self.pub_kinematics = self.create_publisher(Float32MultiArray, 'robot_velocities', 10)
+
+        # Almacenamiento de datos
+        self.rpm_left = 0
+        self.rpm_right = 0
+
+    def update_rpm_left(self, msg):
+        self.rpm_left = msg.data
+        self.compute_kinematics()
+
+    def update_rpm_right(self, msg):
+        self.rpm_right = msg.data
+        self.compute_kinematics()
+
+    def compute_kinematics(self):
+        # Conversión de RPM a velocidad angular (rad/s)
+        omega_left = self.rpm_left * (2 * 3.14159) / 60
+        omega_right = self.rpm_right * (2 * 3.14159) / 60
+
+        # Cálculo de velocidades lineales
+        v_left = omega_left * self.wheel_radius
+        v_right = omega_right * self.wheel_radius
+
+        # Cálculo de velocidad lineal y angular del robot
+        linear_velocity = (v_left + v_right) / 2
+        angular_velocity = (v_right - v_left) / self.axle_length
+
+        # Publicar resultados
+        kinematics_msg = Float32MultiArray()
+        kinematics_msg.data = [linear_velocity, angular_velocity]
+        self.pub_kinematics.publish(kinematics_msg)
+        self.get_logger().info(f'Linear: {linear_velocity:.3f} m/s, Angular: {angular_velocity:.3f} rad/s')
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = RealKinematics()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+if __name__ == '__main__':
+    main()
