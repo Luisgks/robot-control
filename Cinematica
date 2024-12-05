@@ -1,64 +1,95 @@
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Int32
-from std_msgs.msg import Float32MultiArray
+from math import pi
 
-class RealKinematics(Node):
-    def __init__(self):
-        super().__init__('real_kinematics_node')
-        
-        # Parámetros del robot
-        self.wheel_radius = 0.032  # Radio de las ruedas (en metros)
-        self.axle_length = 0.225  # Distancia entre ruedas (en metros)
+# Define robot parameters
+WHEEL_RADIUS = 0.0325  # Wheel radius in meters
+WHEEL_BASE = 0.185  # Distance between the wheels in meters
+MAX_MOTOR_RPM = 30  # Maximum RPM for the motors
 
-        # Subscripciones para las RPM de los motores
-        self.sub_rpm_left = self.create_subscription(Int32, 'motor_rpm_left', self.update_rpm_left, 10)
-        self.sub_rpm_right = self.create_subscription(Int32, 'motor_rpm_right', self.update_rpm_right, 10)
+class RobotController(Node):
+    def _init_(self):
+        super()._init_('robot_controller')
+        self.left_motor_pub = self.create_publisher(Int32, 'left_motor_rpm', 10)
+        self.right_motor_pub = self.create_publisher(Int32, 'right_motor_rpm', 10)
+        self.left_encoder_sub = self.create_subscription(Int32, 'left_encoder_ticks', self.left_encoder_callback, 10)
+        self.right_encoder_sub = self.create_subscription(Int32, 'right_encoder_ticks', self.right_encoder_callback, 10)
 
-        # Publicador de velocidades cinemáticas
-        self.pub_kinematics = self.create_publisher(Float32MultiArray, 'robot_velocities', 10)
+        # Timer to execute control loop
+        self.timer = self.create_timer(0.1, self.control_loop)
 
-        # Almacenamiento de datos
-        self.rpm_left = 0
-        self.rpm_right = 0
+        # Control parameters
+        self.target_distance = 0.2  # Target distance in meters
+        self.traveled_distance = 0.0  # Distance covered
+        self.left_encoder_value = 0
+        self.right_encoder_value = 0
+        self.proportional_gain = 0.3  # Gain for proportional control
 
-    def update_rpm_left(self, msg):
-        self.rpm_left = msg.data
-        self.compute_kinematics()
+    def left_encoder_callback(self, msg):
+        self.left_encoder_value = msg.data / 1000.0  # Convert from mm to meters
 
-    def update_rpm_right(self, msg):
-        self.rpm_right = msg.data
-        self.compute_kinematics()
+    def right_encoder_callback(self, msg):
+        self.right_encoder_value = msg.data / 1000.0  # Convert from mm to meters
 
-    def compute_kinematics(self):
-        # Conversión de RPM a velocidad angular (rad/s)
-        omega_left = self.rpm_left * (2 * 3.14159) / 60
-        omega_right = self.rpm_right * (2 * 3.14159) / 60
+    def compute_motor_rpm(self, linear_velocity, angular_velocity, wheel_radius, wheel_base):
+        # Calculate individual motor RPMs based on velocity inputs
+        rpm_left = ((linear_velocity - angular_velocity * wheel_base / 2) / (pi * wheel_radius)) * 60
+        rpm_right = ((linear_velocity + angular_velocity * wheel_base / 2) / (pi * wheel_radius)) * 60
 
-        # Cálculo de velocidades lineales
-        v_left = omega_left * self.wheel_radius
-        v_right = omega_right * self.wheel_radius
+        # Clamp RPM to the allowable range
+        rpm_left = max(min(rpm_left, MAX_MOTOR_RPM), -MAX_MOTOR_RPM)
+        rpm_right = max(min(rpm_right, MAX_MOTOR_RPM), -MAX_MOTOR_RPM)
 
-        # Cálculo de velocidad lineal y angular del robot
-        linear_velocity = (v_left + v_right) / 2
-        angular_velocity = (v_right - v_left) / self.axle_length
+        return rpm_left, rpm_right
 
-        # Publicar resultados
-        kinematics_msg = Float32MultiArray()
-        kinematics_msg.data = [linear_velocity, angular_velocity]
-        self.pub_kinematics.publish(kinematics_msg)
-        self.get_logger().info(f'Linear: {linear_velocity:.3f} m/s, Angular: {angular_velocity:.3f} rad/s')
+    def control_loop(self):
+        # Compute the current distance traveled
+        self.traveled_distance = (self.left_encoder_value + self.right_encoder_value) / 2
+
+        # Calculate error in distance
+        distance_error = self.target_distance - self.traveled_distance
+
+        # Check if the target has been reached
+        if distance_error <= 0.01:  # Threshold of 1 cm
+            self.get_logger().info("Destination reached. Halting motors.")
+            self.send_motor_commands(0, 0)
+            return
+
+        # Calculate desired linear velocity
+        linear_velocity = self.proportional_gain * distance_error
+        angular_velocity = 0  # No turning required
+
+        # Compute motor RPMs
+        rpm_left, rpm_right = self.compute_motor_rpm(linear_velocity, angular_velocity, WHEEL_RADIUS, WHEEL_BASE)
+        self.send_motor_commands(int(rpm_left), int(rpm_right))
+
+        self.get_logger().info(f"Distance error: {distance_error:.2f} m, RPMs - Left: {int(rpm_left)}, Right: {int(rpm_right)}")
+
+    def send_motor_commands(self, rpm_left, rpm_right):
+        # Publish RPM commands to motors
+        left_msg = Int32()
+        right_msg = Int32()
+        left_msg.data = rpm_left
+        right_msg.data = rpm_right
+
+        self.left_motor_pub.publish(left_msg)
+        self.right_motor_pub.publish(right_msg)
 
 def main(args=None):
     rclpy.init(args=args)
-    node = RealKinematics()
+
+    # Initialize the robot controller node
+    robot_controller = RobotController()
+
     try:
-        rclpy.spin(node)
+        rclpy.spin(robot_controller)
     except KeyboardInterrupt:
         pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
 
-if __name__ == '__main__':
+    # Clean up and shut down
+    robot_controller.destroy_node()
+    rclpy.shutdown()
+
+if _name_ == '_main_':
     main()
