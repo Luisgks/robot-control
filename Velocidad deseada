@@ -2,52 +2,64 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Int32
 
-class DesiredSpeedControl(Node):
-    def __init__(self):
-        super().__init__('desired_speed_control_node')
+# Define robot-specific parameters
+WHEEL_RADIUS = 0.0325  # Wheel radius in meters
+BASE_WIDTH = 0.185  # Distance between the wheels in meters
+
+class MotorRPMPublisher(Node):
+    def _init_(self):
+        super()._init_('motor_rpm_publisher')
+        self.left_motor_pub = self.create_publisher(Int32, 'left_motor_rpm', 10)
+        self.right_motor_pub = self.create_publisher(Int32, 'right_motor_rpm', 10)
         
-        # Parámetros del robot
-        self.wheel_radius = 0.032  # Radio de las ruedas
-        self.axle_length = 0.225  # Separación entre ruedas
+        # Timer to send periodic updates (every 100 ms)
+        self.publish_timer = self.create_timer(0.1, self.publish_rpm_values)
 
-        # Velocidades deseadas
-        self.desired_linear_velocity = 0.07  # Velocidad lineal en m/s
-        self.desired_angular_velocity = 0.0  # Velocidad angular en rad/s
+        # Initial velocities for the robot (m/s and rad/s)
+        self.linear_velocity = 0.03  # Forward speed in m/s
+        self.angular_velocity = 0.0  # Rotational speed in rad/s
 
-        # Publicadores para las RPM deseadas
-        self.pub_rpm_left = self.create_publisher(Int32, 'desired_rpm_left', 10)
-        self.pub_rpm_right = self.create_publisher(Int32, 'desired_rpm_right', 10)
+    def compute_motor_rpms(self, linear_velocity, angular_velocity, wheel_radius, base_width):
+        # Calculate motor RPMs using differential drive kinematics
+        left_rpm = ((linear_velocity - angular_velocity * base_width / 2) / (3.14159 * wheel_radius)) * 60
+        right_rpm = ((linear_velocity + angular_velocity * base_width / 2) / (3.14159 * wheel_radius)) * 60
+        return left_rpm, right_rpm
 
-        # Timer para publicar periódicamente
-        self.timer = self.create_timer(0.1, self.publish_rpm)
+    def publish_rpm_values(self):
+        # Compute RPM values for both motors
+        left_rpm, right_rpm = self.compute_motor_rpms(
+            self.linear_velocity,
+            self.angular_velocity,
+            WHEEL_RADIUS,
+            BASE_WIDTH
+        )
 
-    def calculate_rpm(self):
-        v = self.desired_linear_velocity
-        w = self.desired_angular_velocity
-        r = self.wheel_radius
-        l = self.axle_length
+        # Create and send Int32 messages for motor RPMs
+        left_rpm_msg = Int32()
+        right_rpm_msg = Int32()
+        left_rpm_msg.data = int(left_rpm)
+        right_rpm_msg.data = int(right_rpm)
 
-        # Cálculo de RPM de las ruedas
-        rpm_left = ((v - (w * l / 2)) / (3.14159 * r)) * 60
-        rpm_right = ((v + (w * l / 2)) / (3.14159 * r)) * 60
-        return int(rpm_left), int(rpm_right)
+        self.left_motor_pub.publish(left_rpm_msg)
+        self.right_motor_pub.publish(right_rpm_msg)
 
-    def publish_rpm(self):
-        rpm_left, rpm_right = self.calculate_rpm()
-        self.pub_rpm_left.publish(Int32(data=rpm_left))
-        self.pub_rpm_right.publish(Int32(data=rpm_right))
-        self.get_logger().info(f'Desired RPM - Left: {rpm_left}, Right: {rpm_right}')
+        self.get_logger().info(f"RPM values published: Left = {left_rpm_msg.data}, Right = {right_rpm_msg.data}")
+        self.destroy_node()  # Stops the node after publishing
 
 def main(args=None):
     rclpy.init(args=args)
-    node = DesiredSpeedControl()
+
+    # Instantiate the MotorRPMPublisher node
+    motor_rpm_publisher = MotorRPMPublisher()
+
     try:
-        rclpy.spin(node)
+        rclpy.spin(motor_rpm_publisher)
     except KeyboardInterrupt:
         pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
 
-if __name__ == '__main__':
+    # Properly clean up resources
+    motor_rpm_publisher.destroy_node()
+    rclpy.shutdown()
+
+if _name_ == '_main_':
     main()
