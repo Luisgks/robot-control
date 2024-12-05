@@ -1,55 +1,83 @@
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Int32
+from std_msgs.msg import Float32MultiArray
 
-class PointController(Node):
-    def __init__(self):
-        super().__init__('point_controller_node')
-        
-        # Parámetros del robot
-        self.wheel_radius = 0.032
-        self.axle_length = 0.225
-        self.max_rpm = 135
+class VelocityCalculator(Node):
+    def _init_(self):
+        super()._init_('velocity_calculator')
 
-        # Configuración de control
-        self.target_distance = 0.2  # Distancia objetivo en metros
-        self.kp = 0.4  # Ganancia proporcional
+        # Robot-specific constants
+        self.wheel_radius_m = 0.0325  # Wheel radius in meters
+        self.track_width_m = 0.185    # Distance between wheels (meters)
 
-        # Almacenamiento de estados
-        self.current_distance = 0.0
+        # Subscribers for motor RPMs
+        self.right_rpm_sub = self.create_subscription(
+            Int32,
+            'right_motor_rpm',
+            self.update_right_rpm,
+            10
+        )
+        self.left_rpm_sub = self.create_subscription(
+            Int32,
+            'left_motor_rpm',
+            self.update_left_rpm,
+            10
+        )
 
-        # Publicadores
-        self.pub_rpm_left = self.create_publisher(Int32, 'desired_rpm_left', 10)
-        self.pub_rpm_right = self.create_publisher(Int32, 'desired_rpm_right', 10)
+        # Publisher for robot velocities
+        self.velocity_pub = self.create_publisher(
+            Float32MultiArray,
+            'robot_velocity',
+            10
+        )
 
-    def update_distance(self, distance_left, distance_right):
-        self.current_distance = (distance_left + distance_right) / 2
+        # Storage for motor RPMs
+        self.right_motor_rpm = 0
+        self.left_motor_rpm = 0
 
-    def control(self):
-        error = self.target_distance - self.current_distance
-        if abs(error) < 0.01:
-            self.get_logger().info("Target reached. Stopping motors.")
-            self.publish_rpm(0, 0)
-            return
+    def update_right_rpm(self, msg):
+        self.right_motor_rpm = msg.data
+        self.compute_velocities()
 
-        vx = self.kp * error
-        rpm = min(int(vx * 60 / (3.14159 * self.wheel_radius)), self.max_rpm)
-        self.publish_rpm(rpm, rpm)
+    def update_left_rpm(self, msg):
+        self.left_motor_rpm = msg.data
+        self.compute_velocities()
 
-    def publish_rpm(self, rpm_left, rpm_right):
-        self.pub_rpm_left.publish(Int32(data=rpm_left))
-        self.pub_rpm_right.publish(Int32(data=rpm_right))
+    def compute_velocities(self):
+        # Convert motor RPM to angular velocity in radians/second
+        omega_right = (self.right_motor_rpm * 2 * 3.14159) / 60
+        omega_left = (self.left_motor_rpm * 2 * 3.14159) / 60
+
+        # Calculate linear velocities of the wheels
+        velocity_right = omega_right * self.wheel_radius_m
+        velocity_left = omega_left * self.wheel_radius_m
+
+        # Compute robot's linear and angular velocity
+        linear_velocity = (velocity_right + velocity_left) / 2
+        angular_velocity = (velocity_right - velocity_left) / self.track_width_m
+
+        # Publish velocities as a Float32MultiArray
+        velocity_message = Float32MultiArray()
+        velocity_message.data = [linear_velocity, angular_velocity]
+        self.velocity_pub.publish(velocity_message)
+
+        # Log the published values for debugging
+        self.get_logger().info(f'Linear Velocity: {linear_velocity:.2f} m/s, Angular Velocity: {angular_velocity:.2f} rad/s')
 
 def main(args=None):
     rclpy.init(args=args)
-    node = PointController()
+
+    # Instantiate the VelocityCalculator node
+    velocity_calculator = VelocityCalculator()
+
     try:
-        rclpy.spin(node)
+        rclpy.spin(velocity_calculator)
     except KeyboardInterrupt:
         pass
     finally:
-        node.destroy_node()
+        velocity_calculator.destroy_node()
         rclpy.shutdown()
 
-if __name__ == '__main__':
+if _name_ == '_main_':
     main()
